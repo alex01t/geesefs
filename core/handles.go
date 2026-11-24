@@ -114,6 +114,7 @@ type Inode struct {
 	dirtyQueueId   uint64
 	buffers        BufferList
 	readRanges     []ReadRange
+	diskCacheUse   uint64
 	DiskFDQueueID  uint64
 	DiskCacheFD    *os.File
 	OnDisk         bool

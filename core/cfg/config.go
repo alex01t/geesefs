@@ -102,6 +102,8 @@ type FlagStorage struct {
 	RefreshFilename     string
 	FlushFilename       string
 	CachePath           string
+	CacheMinFreePercent int
+	CacheCleanOnStart   bool
 	MaxDiskCacheFD      int64
 	CacheFileMode       os.FileMode
 	PartSizes           []PartSizeConfig

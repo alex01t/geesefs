@@ -100,6 +100,15 @@ MISC OPTIONS:
 		},
 
 		cli.IntFlag{
+			Name:  "cache-min-free-percent",
+			Usage: "Pause disk spills and reclaim idle clean cache files below this percentage of available disk space (0 disables)",
+		},
+		cli.BoolFlag{
+			Name:  "cache-clean-on-start",
+			Usage: "Delete all contents of the dedicated --cache directory at startup",
+		},
+
+		cli.IntFlag{
 			Name:  "dir-mode",
 			Value: 0755,
 			Usage: "Permission bits for directories. (default: 0755)",
@@ -886,6 +895,8 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		SymlinkAttr:         c.String("symlink-attr"),
 		RefreshAttr:         c.String("refresh-attr"),
 		CachePath:           c.String("cache"),
+		CacheMinFreePercent: c.Int("cache-min-free-percent"),
+		CacheCleanOnStart:   c.Bool("cache-clean-on-start"),
 		MaxDiskCacheFD:      int64(c.Int("max-disk-cache-fd")),
 		CacheFileMode:       os.FileMode(c.Int("cache-file-mode")),
 		UsePatch:            c.Bool("enable-patch"),

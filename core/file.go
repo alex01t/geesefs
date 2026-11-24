@@ -283,6 +283,7 @@ func (inode *Inode) loadFromDisk(diskRanges []Range) (allocated int64, err error
 		_, err = inode.DiskCacheFD.ReadAt(data, int64(rr.Start))
 		if err == nil {
 			inode.buffers.ReviveFromDisk(rr.Start, data)
+			inode.fs.diskCleaner.touch(inode)
 		}
 	}
 	return
@@ -1434,19 +1435,11 @@ func (inode *Inode) resetCache() {
 	// Drop all buffers including dirty ones
 	allocated := inode.buffers.RemoveRange(0, 0xffffffffffffffff, nil)
 	inode.fs.bufferPool.Use(allocated, true)
+	inode.fs.diskCleaner.forget(inode)
 	// Also remove the cache file from disk, if present
 	if inode.OnDisk {
-		if inode.DiskCacheFD != nil {
-			inode.DiskCacheFD.Close()
-			inode.DiskCacheFD = nil
-			inode.fs.diskFdQueue.DeleteFD(inode)
-		}
-		cacheFileName := inode.fs.flags.CachePath + "/" + inode.FullName()
-		err := os.Remove(cacheFileName)
-		if err != nil {
-			log.Errorf("Couldn't remove %v: %v", cacheFileName, err)
-		} else {
-			inode.OnDisk = false
+		if err := inode.removeDiskCacheFile(); err != nil {
+			log.Errorf("Couldn't remove cache for %v: %v", inode.FullName(), err)
 		}
 	}
 	// And abort multipart upload, too

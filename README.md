@@ -178,6 +178,22 @@ See [bench/README.md](bench/README.md).
 
 There's a lot of tuning you can do. Consult `geesefs -h` to view the list of options.
 
+## Disk cache cleanup
+
+Use a dedicated directory for each active GeeseFS mount. For example,
+`--cache /var/lib/geesefs-cache/my-volume --cache-min-free-percent 25`
+checks available space on the filesystem containing that directory every five
+seconds. Below the threshold, GeeseFS pauses new disk spills and deletes its
+least recently used clean, idle cache files until available space recovers.
+Open files and uncommitted writes can limit how much space it can reclaim.
+The default threshold of zero disables this behavior.
+
+Add `--cache-clean-on-start` to delete **all contents** of the configured
+cache directory before serving the mount. Use this only with a directory
+dedicated to this mount. GeeseFS does not reuse cached ranges across restarts.
+Startup cleanup is disabled by default and works independently of the
+free-space threshold.
+
 # Common Issues
 
 ## Memory Limit

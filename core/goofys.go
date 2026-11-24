@@ -19,6 +19,7 @@ import (
 	"github.com/yandex-cloud/geesefs/core/cfg"
 
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -115,6 +116,7 @@ type Goofys struct {
 	zeroBuf []byte
 
 	diskFdQueue *FDQueue
+	diskCleaner *diskCacheCleaner
 
 	stats OpStats
 
@@ -345,6 +347,9 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 
 	fs.fileHandles = make(map[fuseops.HandleID]*FileHandle)
 
+	if err := fs.prepareDiskCache(); err != nil {
+		return nil, fmt.Errorf("prepare disk cache: %w", err)
+	}
 	fs.flusherCond = sync.NewCond(&fs.flusherMu)
 	go fs.Flusher()
 	if fs.flags.StatsInterval > 0 {
@@ -358,6 +363,9 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 		}
 	}
 
+	if fs.diskCleaner != nil {
+		go fs.cleanDiskCache()
+	}
 	go fs.MetaEvictor()
 
 	return fs, nil
@@ -366,6 +374,9 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 func (fs *Goofys) Shutdown() {
 	atomic.StoreInt32(&fs.shutdown, 1)
 	close(fs.shutdownCh)
+	if fs.diskCleaner != nil {
+		<-fs.diskCleaner.done
+	}
 	fs.WakeupFlusher()
 	if fs.diskFdQueue != nil {
 		fs.diskFdQueue.cond.Broadcast()
@@ -502,12 +513,11 @@ func (fs *Goofys) FreeSomeCleanBuffers(origSize int64) (int64, bool) {
 			break
 		}
 		inode.mu.Lock()
-		toFs := -1
 		buf := inode.buffers.Get(cleanEnd)
 		// Never evict buffers flushed in an incomplete (last) part
 		if buf != nil && (buf.state == BUF_CLEAN || buf.state == BUF_FLUSHED_FULL) &&
 			buf.ptr != nil && !inode.IsRangeLocked(buf.offset, buf.length, false) {
-			fs.tryEvictToDisk(inode, buf, &toFs)
+			fs.tryEvictToDisk(inode, buf)
 			allocated, _ := inode.buffers.EvictFromMemory(buf)
 			if allocated != 0 {
 				fs.bufferPool.UseUnlocked(allocated, false)
@@ -530,28 +540,27 @@ func (fs *Goofys) FreeSomeCleanBuffers(origSize int64) (int64, bool) {
 	return freed, haveDirty
 }
 
-// FIXME: Implement disk cache size limit, add another btree.Map-based
-// "LRU" queue to delete old files from the disk.
-func (fs *Goofys) tryEvictToDisk(inode *Inode, buf *FileBuffer, toFs *int) {
-	if fs.flags.CachePath != "" && !buf.onDisk {
-		if *toFs == -1 {
-			*toFs = 1
+// Spill a buffer unless the cache filesystem is under pressure.
+func (fs *Goofys) tryEvictToDisk(inode *Inode, buf *FileBuffer) {
+	if fs.flags.CachePath == "" || buf.onDisk || (fs.diskCleaner != nil && fs.diskCleaner.low.Load()) {
+		return
+	}
+	err := inode.OpenCacheFD()
+	if err == nil {
+		_, err = inode.DiskCacheFD.WriteAt(buf.data, int64(buf.offset))
+		// Even a partial write can leave blocks to reclaim.
+		fs.diskCleaner.touch(inode)
+		if err == nil {
+			buf.onDisk = true
+			return
 		}
-		if *toFs > 0 {
-			// Evict to disk
-			err := inode.OpenCacheFD()
-			if err != nil {
-				*toFs = 0
-			} else {
-				_, err := inode.DiskCacheFD.WriteAt(buf.data, int64(buf.offset))
-				if err != nil {
-					*toFs = 0
-					log.Errorf("Couldn't write %v bytes at offset %v to %v: %v",
-						len(buf.data), buf.offset, fs.flags.CachePath+"/"+inode.FullName(), err)
-				} else {
-					buf.onDisk = true
-				}
-			}
+		log.Errorf("Couldn't write %v bytes at offset %v to %v: %v",
+			len(buf.data), buf.offset, fs.flags.CachePath+"/"+inode.FullName(), err)
+	}
+	if fs.diskCleaner != nil && errors.Is(err, syscall.ENOSPC) {
+		select {
+		case fs.diskCleaner.wake <- struct{}{}:
+		default:
 		}
 	}
 }
